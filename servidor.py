@@ -9,14 +9,16 @@ from pymodbus.server import StartAsyncTcpServer
 async def atualizar_sensores(context: ModbusServerContext, slave_id: int = 0):
     t = 0
     while True:
-        temperatura_normal = 250 # temperatura padrão
+        temperatura_normal = 60 # temperatura padrão
         temperatura = temperatura_normal + random.randint(-3, 3) # pega a temperatura padrão e simula uma variação
 
-        pressao_normal = 1000 # pressao padrão
+        pressao_normal = 100 # pressao padrão
         pressao = pressao_normal + random.randint(-10, 10) # pega a pressao padrão e simula uma variação
 
         context[slave_id].setValues(3, 0, [temperatura, pressao])  # holding registers
         t += 1
+
+        print(f"[servidor] atualizando sensores: temperatura={temperatura}, pressao={pressao}")
         await asyncio.sleep(1)
 
 async def main():
@@ -27,10 +29,10 @@ async def main():
     args = parser.parse_args()
 
     store = ModbusSlaveContext(
-        hr=ModbusSequentialDataBlock(0, [0] * args.num_regs),  # Holding Registers
-        ir=ModbusSequentialDataBlock(0, [0] * args.num_regs),  # Input Registers
-        co=ModbusSequentialDataBlock(0, [0] * args.num_regs),  # Coils
-        di=ModbusSequentialDataBlock(0, [0] * args.num_regs),  # Discrete Inputs
+        di=ModbusSequentialDataBlock(0, [0]*100),
+        co=ModbusSequentialDataBlock(0, [0]*100),
+        hr=ModbusSequentialDataBlock(0, [0]*100),
+        ir=ModbusSequentialDataBlock(0, [0]*100),
     )
     context = ModbusServerContext(slaves=store, single=True)
 
