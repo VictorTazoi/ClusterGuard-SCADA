@@ -1,0 +1,19 @@
+{
+  "inicio": 1792016053.054459,
+  "fim": 1792016073.054459,
+  "config": {
+    "saida": "exemplos_validados/ensaio_3_100rps",
+    "normal": 8.0,
+    "carga": 4.0,
+    "recuperacao": 8.0,
+    "taxa": 100.0,
+    "intervalo": 1,
+    "port": 0,
+    "seed": 45,
+    "agregar": null
+  },
+  "porta_efetiva": 35029,
+  "bytes": "ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet",
+  "ambiente": "loopback; servidor, cliente e carga no mesmo processo asyncio",
+  "status": "completo"
+}

@@ -1,0 +1,19 @@
+{
+  "inicio": 1792017621.3159378,
+  "fim": 1792017761.3159378,
+  "config": {
+    "saida": "resultados/ensaio_20261014_194020",
+    "normal": 60,
+    "carga": 20,
+    "recuperacao": 60,
+    "taxa": 50.0,
+    "intervalo": 1,
+    "port": 5020,
+    "seed": 42,
+    "agregar": null
+  },
+  "porta_efetiva": 5020,
+  "bytes": "ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet",
+  "ambiente": "loopback; servidor, cliente e carga no mesmo processo asyncio",
+  "status": "completo"
+}
