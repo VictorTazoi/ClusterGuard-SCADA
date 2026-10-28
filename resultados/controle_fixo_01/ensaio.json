@@ -1,0 +1,21 @@
+{
+  "inicio": 1793190828.3552766,
+  "fim": 1793190968.3552766,
+  "config": {
+    "saida": "resultados/controle_fixo_01",
+    "normal": 60.0,
+    "carga": 20.0,
+    "recuperacao": 60.0,
+    "taxa": 20.0,
+    "intervalo": 1.0,
+    "perfil_cliente": "fixo",
+    "jitter": 0.3,
+    "port": 0,
+    "seed": 42,
+    "agregar": null
+  },
+  "porta_efetiva": 51521,
+  "bytes": "ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet",
+  "ambiente": "loopback; servidor, cliente e carga no mesmo processo asyncio",
+  "status": "completo"
+}

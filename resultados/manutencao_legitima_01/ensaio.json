@@ -1,0 +1,24 @@
+{
+  "inicio": 1793192776.8264396,
+  "fim": 1793192916.8264396,
+  "config": {
+    "saida": "resultados/manutencao_legitima_01",
+    "normal": 60.0,
+    "carga": 20.0,
+    "recuperacao": 60.0,
+    "taxa": 20.0,
+    "intervalo": 1.0,
+    "perfil_cliente": "variavel",
+    "jitter": 0.3,
+    "manutencao_inicio": 20.0,
+    "manutencao_duracao": 15.0,
+    "intervalo_manutencao": 0.2,
+    "port": 0,
+    "seed": 42,
+    "agregar": null
+  },
+  "porta_efetiva": 49917,
+  "bytes": "ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet",
+  "ambiente": "loopback; servidor, cliente e carga no mesmo processo asyncio",
+  "status": "completo"
+}

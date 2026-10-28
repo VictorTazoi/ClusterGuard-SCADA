@@ -27,11 +27,13 @@ async def request(port, timeout=0.5):
     """Uma leitura FC03, unit id 1, endereço 0, dois registradores."""
     ts, start = time.time(), time.perf_counter()
     writer = None
+    connected = False
     sent = received = 0
     out = dict(ts=ts, sucesso=0, timeout=0, temp='', pres='', detalhe='')
     try:
         async with asyncio.timeout(timeout):
             reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            connected = True
             packet = struct.pack('>HHHBBHH', 1, 0, 6, 1, 3, 0, 2)
             writer.write(packet)
             sent = len(packet)
@@ -47,8 +49,11 @@ async def request(port, timeout=0.5):
                 raise ValueError('resposta Modbus inesperada')
             out['temp'], out['pres'] = struct.unpack('>HH', body[2:])
             out['sucesso'] = 1
-    except TimeoutError:
-        out.update(timeout=1, detalhe='timeout')
+    except TimeoutError as exc:
+        if connected:
+            out.update(timeout=1, detalhe='timeout')
+        else:
+            out['detalhe'] = type(exc).__name__ + ': conexão TCP não estabelecida'
     except (OSError, asyncio.IncompleteReadError, ValueError) as exc:
         out['detalhe'] = type(exc).__name__ + ': ' + str(exc)
     finally:
@@ -101,19 +106,55 @@ class RTU:
             self.connections.discard(writer)
             writer.close()
 
-async def polling(port, duration, interval, log, origin):
+async def polling(port, duration, interval, log, origin, interval_fn=None):
+    inicio = time.monotonic()
     end = time.monotonic()+duration
     deadline = time.monotonic()
     while time.monotonic() < end:
-        log.row(origem=origin, **(await request(port)))
-        deadline += interval
-        # Não dispara rajada para compensar consultas atrasadas.
-        deadline = max(deadline, time.monotonic())
-        await asyncio.sleep(max(0, min(deadline-time.monotonic(), end-time.monotonic())))
+        log.row(origem=origin,**(await request(port)))
 
+        if interval_fn is not None:
+            decorrido = time.monotonic() - inicio
+            passo = interval_fn(decorrido)
+        else:
+            passo = interval
+
+        deadline += passo
+        deadline = max(deadline,time.monotonic())
+
+        espera = max(0,min(deadline - time.monotonic(),end - time.monotonic()))
+
+        await asyncio.sleep(espera)
 async def load(port, duration, rate, log):
     # Sequencial, sem concorrência ilimitada: taxa solicitada é um teto.
     await polling(port, duration, 1/rate, log, 'carga')
+
+def intervalo_do_cliente(decorrido,args,rng):
+    """
+    Define o intervalo entre consultas
+    do cliente SCADA legítimo.
+    """
+
+    inicio_manutencao = args.manutencao_inicio
+
+    fim_manutencao = (args.manutencao_inicio + args.manutencao_duracao)
+
+    em_manutencao = (args.manutencao_duracao > 0 and inicio_manutencao <= decorrido < fim_manutencao)
+
+
+    if em_manutencao:
+        intervalo_base = (args.intervalo_manutencao)
+    elif args.perfil_cliente == "fixo":
+        return args.intervalo
+    else:
+        intervalo_base = args.intervalo
+
+
+    fator = rng.uniform( 1 - args.jitter, 1 + args.jitter)
+
+    intervalo_final = (intervalo_base * fator)
+
+    return max(0.1,intervalo_final)
 
 def aggregate(folder):
     folder = Path(folder)
@@ -162,6 +203,7 @@ async def run(args):
         clientlog=log('cliente.csv',EVENTS)
         loadlog=log('carga.csv',EVENTS)
         attacks=log('ataques.csv',['inicio','fim','tipo','taxa_alvo_rps'])
+        atividades_log = log("atividades_legitimas.csv",["inicio","fim","tipo"])
         rtu=RTU(serverlog,args.seed)
         # Bind exclusivo: nunca usa um servidor desconhecido na porta ocupada.
         server=await asyncio.start_server(rtu.handle,'127.0.0.1',args.port)
@@ -169,14 +211,32 @@ async def run(args):
         tasks.append(asyncio.create_task(rtu.sensors()))
         start=time.time()
         total=args.normal+args.carga+args.recuperacao
-        tasks.append(asyncio.create_task(polling(port,total,args.intervalo,clientlog,'legitimo')))
+        if args.manutencao_duracao > 0:
+            atividades_log.row(inicio=(start + args.manutencao_inicio),fim=(start + args.manutencao_inicio + args.manutencao_duracao),tipo="manutencao_legitima")
+        rng_cliente = random.Random(args.seed + 10_000)
+
+        def proximo_intervalo(decorrido):
+            return intervalo_do_cliente(decorrido,args,rng_cliente)
+        
+        tasks.append(asyncio.create_task(polling(port,total,args.intervalo,clientlog,"legitimo",proximo_intervalo)))
         print('Fase NORMAL', flush=True)
         await asyncio.sleep(args.normal)
-        attackstart=time.time()
-        print('Fase CARGA controlada', flush=True)
-        await load(port,args.carga,args.taxa,loadlog)
-        attackend=time.time()
-        attacks.row(inicio=attackstart,fim=attackend,tipo='carga_Modbus_FC03',taxa_alvo_rps=args.taxa)
+        print("Fase CARGA controlada",flush=True)
+        if args.perfil_carga == "degraus":
+            segmentos = [("baixa", args.taxa_baixa),("media", args.taxa_media),("alta", args.taxa)]
+        else:
+            segmentos = [("fixa", args.taxa)]
+
+        duracao_segmento = (args.carga / len(segmentos))
+        for nivel, taxa in segmentos:
+            inicio_segmento = time.time()
+
+            print(f" Carga {nivel}: {taxa} req/s",flush=True)
+
+            await load(port,duracao_segmento,taxa,loadlog)
+            fim_segmento = time.time()
+            attacks.row(inicio=inicio_segmento,fim=fim_segmento,tipo=f"carga_{nivel}",taxa_alvo_rps=taxa)
+
         print('Fase RECUPERACAO', flush=True)
         await asyncio.sleep(args.recuperacao)
         await tasks[1]
@@ -210,15 +270,23 @@ def main():
     p.add_argument('--carga',type=positive,default=20)
     p.add_argument('--recuperacao',type=positive,default=60)
     p.add_argument('--taxa',type=positive,default=50)
+    p.add_argument("--perfil-carga",choices=["fixa","degraus"],default="fixa")
+    p.add_argument("--taxa-baixa",type=positive,default=2)
+    p.add_argument("--taxa-media",type=positive,default=5)
     p.add_argument('--intervalo',type=positive,default=1)
+    p.add_argument("--perfil-cliente",choices=["fixo","variavel"],default="fixo")
+    p.add_argument("--jitter",type=float,default=0.30)
+    p.add_argument("--manutencao-inicio",type=float,default=0)
+    p.add_argument("--manutencao-duracao",type=float,default=0)
+    p.add_argument("--intervalo-manutencao",type=positive,default=0.20)
     p.add_argument('--port',type=int,default=5020)
     p.add_argument('--seed',type=int,default=42)
     p.add_argument('--agregar',metavar='PASTA',help='recalcula CSVs de um ensaio completo')
     a=p.parse_args()
     if a.agregar:
         print(aggregate(a.agregar)); return
-    if a.taxa>200 or a.carga>120 or a.normal>600 or a.recuperacao>600 or a.intervalo<0.1 or not 0<=a.port<=65535:
-        p.error('limites: taxa <=200, carga <=120s, normal/recuperacao <=600s, intervalo >=0.1s, porta 0..65535')
+    if (a.taxa > 200 or a.carga > 120 or a.normal > 600 or a.recuperacao > 600 or a.intervalo < 0.1 or not 0 <= a.port <= 65535 or not math.isfinite(a.jitter) or not 0 <= a.jitter <= 0.5 or not math.isfinite(a.manutencao_inicio) or not math.isfinite(a.manutencao_duracao) or a.manutencao_inicio < 0 or a.manutencao_duracao < 0 or (a.manutencao_inicio + a.manutencao_duracao > a.normal) or a.intervalo_manutencao < 0.1 or (a.perfil_carga == "degraus" and not (a.taxa_baixa <= a.taxa_media <= a.taxa))):
+        p.error("limites: taxa <=200, carga <=120s, normal/recuperacao <=600s, intervalo >=0.1s, jitter 0..0.5, porta 0..65535")
     try:
         asyncio.run(run(a))
     except KeyboardInterrupt:
