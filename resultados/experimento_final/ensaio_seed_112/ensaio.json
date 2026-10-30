@@ -1,0 +1,27 @@
+{
+  "inicio": 1793198442.3481755,
+  "fim": 1793198622.3481755,
+  "config": {
+    "saida": "resultados\\experimento_final\\ensaio_seed_112",
+    "normal": 60.0,
+    "carga": 60.0,
+    "recuperacao": 60.0,
+    "taxa": 10.0,
+    "perfil_carga": "degraus",
+    "taxa_baixa": 2.0,
+    "taxa_media": 5.0,
+    "intervalo": 1.0,
+    "perfil_cliente": "variavel",
+    "jitter": 0.3,
+    "manutencao_inicio": 20.0,
+    "manutencao_duracao": 15.0,
+    "intervalo_manutencao": 0.2,
+    "port": 0,
+    "seed": 112,
+    "agregar": null
+  },
+  "porta_efetiva": 54825,
+  "bytes": "ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet",
+  "ambiente": "loopback; servidor, cliente e carga no mesmo processo asyncio",
+  "status": "completo"
+}
