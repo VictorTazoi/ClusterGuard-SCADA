@@ -7,111 +7,199 @@ import math
 import random
 import struct
 import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
+ENDERECO_LOCAL = '127.0.0.1'
+TIMEOUT_CONSULTA_S = 0.5
+INTERVALO_SENSORES_S = 1
+TAMANHO_CABECALHO_MODBUS_BYTES = 7
+COMPRIMENTO_MINIMO_MODBUS_BYTES = 2
+COMPRIMENTO_MAXIMO_MODBUS_BYTES = 254
+QUANTIDADE_REGISTRADORES = 100
+TEMPERATURA_NOMINAL = 60
+VARIACAO_TEMPERATURA = 3
+PRESSAO_NOMINAL = 100
+VARIACAO_PRESSAO = 10
+
 FEATURES = ['taxa_requisicoes', 'bytes_rx', 'bytes_tx', 'latencia_ms', 'taxa_timeout', 'taxa_erro']
-EVENTS = ['ts', 'origem', 'sucesso', 'timeout', 'latencia_ms', 'bytes_tx', 'bytes_rx', 'temp', 'pres', 'detalhe']
+EVENTS = [
+    'ts', 'origem', 'sucesso', 'timeout', 'latencia_ms',
+    'bytes_tx', 'bytes_rx', 'temp', 'pres', 'detalhe',
+]
+
+TAXA_MAXIMA_CARGA_RPS = 200
+DURACAO_MAXIMA_CARGA_S = 120
+DURACAO_MAXIMA_FASE_SEM_CARGA_S = 600
+INTERVALO_MINIMO_CLIENTE_S = 0.1
+JITTER_MAXIMO = 0.5
+PORTA_MAXIMA = 65535
+DESLOCAMENTO_SEED_CLIENTE = 10_000
+
+
+@dataclass
+class Configuracao:
+    saida: str
+    normal: float
+    carga: float
+    recuperacao: float
+    taxa: float
+    perfil_carga: str
+    taxa_baixa: float
+    taxa_media: float
+    intervalo: float
+    perfil_cliente: str
+    jitter: float
+    manutencao_inicio: float
+    manutencao_duracao: float
+    intervalo_manutencao: float
+    port: int
+    seed: int
+    agregar: str | None
+
 
 class Log:
-    def __init__(self, path, fields):
-        self.f = open(path, 'x', newline='', encoding='utf-8')
-        self.w = csv.DictWriter(self.f, fieldnames=fields)
-        self.w.writeheader()
-    def row(self, **row):
-        self.w.writerow(row)
-        self.f.flush()
-    def close(self):
-        self.f.close()
+    def __init__(self, path: str | Path, fields: Sequence[str]) -> None:
+        self.arquivo = open(path, 'x', newline='', encoding='utf-8')
+        self.escritor = csv.DictWriter(self.arquivo, fieldnames=fields)
+        self.escritor.writeheader()
 
-async def request(port, timeout=0.5):
-    """Uma leitura FC03, unit id 1, endereço 0, dois registradores."""
-    ts, start = time.time(), time.perf_counter()
+    def row(self, **registro: str | int | float) -> None:
+        self.escritor.writerow(registro)
+        self.arquivo.flush()
+
+    def close(self) -> None:
+        self.arquivo.close()
+
+
+async def request(port: int, timeout: float = TIMEOUT_CONSULTA_S) -> dict[str, str | int | float]:
+    """Consulta FC03 local; timeout em segundos e latência retornada em ms.
+
+    Falhas previstas viram registros com sucesso=0. O campo timeout só vale 1
+    quando a conexão já foi estabelecida; a latência inclui o fechamento.
+    """
+    ts, inicio_medicao = time.time(), time.perf_counter()
     writer = None
-    connected = False
-    sent = received = 0
-    out = dict(ts=ts, sucesso=0, timeout=0, temp='', pres='', detalhe='')
+    conexao_estabelecida = False
+    bytes_enviados = bytes_recebidos = 0
+    tentativa = dict(ts=ts, sucesso=0, timeout=0, temp='', pres='', detalhe='')
     try:
         async with asyncio.timeout(timeout):
-            reader, writer = await asyncio.open_connection('127.0.0.1', port)
-            connected = True
-            packet = struct.pack('>HHHBBHH', 1, 0, 6, 1, 3, 0, 2)
-            writer.write(packet)
-            sent = len(packet)
+            reader, writer = await asyncio.open_connection(ENDERECO_LOCAL, port)
+            conexao_estabelecida = True
+            consulta = struct.pack('>HHHBBHH', 1, 0, 6, 1, 3, 0, 2)
+            writer.write(consulta)
+            bytes_enviados = len(consulta)
             await writer.drain()
-            header = await reader.readexactly(7)
-            received += len(header)
-            tid, proto, length, unit = struct.unpack('>HHHB', header)
-            if not 2 <= length <= 254:
+            cabecalho = await reader.readexactly(TAMANHO_CABECALHO_MODBUS_BYTES)
+            bytes_recebidos += len(cabecalho)
+            transacao, protocolo, comprimento, unidade = struct.unpack('>HHHB', cabecalho)
+            if not COMPRIMENTO_MINIMO_MODBUS_BYTES <= comprimento <= COMPRIMENTO_MAXIMO_MODBUS_BYTES:
                 raise ValueError('comprimento Modbus invalido')
-            body = await reader.readexactly(length - 1)
-            received += len(body)
-            if (tid, proto, unit) != (1, 0, 1) or len(body) != 6 or body[:2] != b'\x03\x04':
+            corpo = await reader.readexactly(comprimento - 1)
+            bytes_recebidos += len(corpo)
+            if (transacao, protocolo, unidade) != (1, 0, 1) or len(corpo) != 6 or corpo[:2] != b'\x03\x04':
                 raise ValueError('resposta Modbus inesperada')
-            out['temp'], out['pres'] = struct.unpack('>HH', body[2:])
-            out['sucesso'] = 1
+            tentativa['temp'], tentativa['pres'] = struct.unpack('>HH', corpo[2:])
+            tentativa['sucesso'] = 1
     except TimeoutError as exc:
-        if connected:
-            out.update(timeout=1, detalhe='timeout')
+        if conexao_estabelecida:
+            tentativa.update(timeout=1, detalhe='timeout')
         else:
-            out['detalhe'] = type(exc).__name__ + ': conexão TCP não estabelecida'
+            tentativa['detalhe'] = type(exc).__name__ + ': conexão TCP não estabelecida'
     except (OSError, asyncio.IncompleteReadError, ValueError) as exc:
-        out['detalhe'] = type(exc).__name__ + ': ' + str(exc)
+        tentativa['detalhe'] = type(exc).__name__ + ': ' + str(exc)
     finally:
         if writer:
             writer.close()
             try:
                 await writer.wait_closed()
             except OSError:
+                # Uma falha no fechamento não substitui o resultado da tentativa.
                 pass
-    out.update(latencia_ms=round((time.perf_counter()-start)*1000, 6), bytes_tx=sent, bytes_rx=received)
-    return out
+    tentativa.update(
+        latencia_ms=round((time.perf_counter() - inicio_medicao) * 1000, 6),
+        bytes_tx=bytes_enviados,
+        bytes_rx=bytes_recebidos,
+    )
+    return tentativa
+
 
 class RTU:
     """Subconjunto Modbus TCP FC03. Mantém os mesmos sensores dos originais."""
-    def __init__(self, log, seed):
+    def __init__(self, log: Log, seed: int) -> None:
         self.log = log
         self.rng = random.Random(seed)
-        self.values = (60, 100)
-        self.connections = set()
-    async def sensors(self):
+        self.values = (TEMPERATURA_NOMINAL, PRESSAO_NOMINAL)
+        self.connections: set[asyncio.StreamWriter] = set()
+
+    async def sensors(self) -> None:
         while True:
-            self.values = (60+self.rng.randint(-3,3), 100+self.rng.randint(-10,10))
-            await asyncio.sleep(1)
-    async def handle(self, reader, writer):
+            self.values = (
+                TEMPERATURA_NOMINAL + self.rng.randint(-VARIACAO_TEMPERATURA, VARIACAO_TEMPERATURA),
+                PRESSAO_NOMINAL + self.rng.randint(-VARIACAO_PRESSAO, VARIACAO_PRESSAO),
+            )
+            await asyncio.sleep(INTERVALO_SENSORES_S)
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.connections.add(writer)
         try:
             while True:
-                header = await reader.readexactly(7)
+                cabecalho = await reader.readexactly(TAMANHO_CABECALHO_MODBUS_BYTES)
                 ts = time.time()
-                tid, proto, length, unit = struct.unpack('>HHHB', header)
-                if proto != 0 or not 2 <= length <= 254:
+                transacao, protocolo, comprimento, unidade = struct.unpack('>HHHB', cabecalho)
+                if protocolo != 0 or not (
+                    COMPRIMENTO_MINIMO_MODBUS_BYTES <= comprimento <= COMPRIMENTO_MAXIMO_MODBUS_BYTES
+                ):
                     break
-                body = await reader.readexactly(length-1)
-                if len(body) == 5 and body[0] == 3:
-                    addr, count = struct.unpack('>HH', body[1:])
-                    if 1 <= count <= 100 and addr+count <= 100:
-                        regs = list(self.values) + [0]*98
-                        payload = bytes([3, 2*count]) + struct.pack('>'+'H'*count, *regs[addr:addr+count])
+                corpo = await reader.readexactly(comprimento - 1)
+                if len(corpo) == 5 and corpo[0] == 3:
+                    endereco, quantidade = struct.unpack('>HH', corpo[1:])
+                    if (
+                        1 <= quantidade <= QUANTIDADE_REGISTRADORES
+                        and endereco + quantidade <= QUANTIDADE_REGISTRADORES
+                    ):
+                        registradores = list(self.values) + [0] * (QUANTIDADE_REGISTRADORES - 2)
+                        conteudo_resposta = bytes([3, 2 * quantidade]) + struct.pack(
+                            '>' + 'H' * quantidade,
+                            *registradores[endereco:endereco + quantidade],
+                        )
                     else:
-                        payload = b'\x83\x02'
+                        conteudo_resposta = b'\x83\x02'
                 else:
-                    payload = bytes([(body[0] | 128), 1])
-                response = struct.pack('>HHHB', tid, 0, len(payload)+1, unit)+payload
-                writer.write(response)
+                    conteudo_resposta = bytes([(corpo[0] | 128), 1])
+                resposta = struct.pack(
+                    '>HHHB', transacao, 0, len(conteudo_resposta) + 1, unidade,
+                ) + conteudo_resposta
+                writer.write(resposta)
                 await writer.drain()
-                self.log.row(ts=ts, bytes_rx=7+len(body), bytes_tx=len(response))
+                self.log.row(
+                    ts=ts, bytes_rx=TAMANHO_CABECALHO_MODBUS_BYTES + len(corpo),
+                    bytes_tx=len(resposta),
+                )
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
+            # O cliente pode encerrar a conexão sem completar outra solicitação.
             pass
         finally:
             self.connections.discard(writer)
             writer.close()
 
-async def polling(port, duration, interval, log, origin, interval_fn=None):
+
+async def polling(
+    port: int, duration: float, interval: float, log: Log, origin: str,
+    interval_fn: Callable[[float], float] | None = None,
+) -> None:
+    """Consulta sequencialmente por duration segundos; interval também está em segundos.
+
+    interval_fn recebe o tempo decorrido após a tentativa. Atrasos não acumulam
+    consultas pendentes: o próximo prazo nunca fica anterior ao instante atual.
+    """
     inicio = time.monotonic()
-    end = time.monotonic()+duration
-    deadline = time.monotonic()
-    while time.monotonic() < end:
-        log.row(origem=origin,**(await request(port)))
+    fim = time.monotonic() + duration
+    proxima_consulta = time.monotonic()
+    while time.monotonic() < fim:
+        log.row(origem=origin, **(await request(port)))
 
         if interval_fn is not None:
             decorrido = time.monotonic() - inicio
@@ -119,180 +207,276 @@ async def polling(port, duration, interval, log, origin, interval_fn=None):
         else:
             passo = interval
 
-        deadline += passo
-        deadline = max(deadline,time.monotonic())
-
-        espera = max(0,min(deadline - time.monotonic(),end - time.monotonic()))
-
+        proxima_consulta += passo
+        proxima_consulta = max(proxima_consulta, time.monotonic())
+        espera = max(0, min(proxima_consulta - time.monotonic(), fim - time.monotonic()))
         await asyncio.sleep(espera)
-async def load(port, duration, rate, log):
+
+
+async def load(port: int, duration: float, rate: float, log: Log) -> None:
     # Sequencial, sem concorrência ilimitada: taxa solicitada é um teto.
-    await polling(port, duration, 1/rate, log, 'carga')
+    await polling(port, duration, 1 / rate, log, 'carga')
 
-def intervalo_do_cliente(decorrido,args,rng):
-    """
-    Define o intervalo entre consultas
-    do cliente SCADA legítimo.
-    """
+def intervalo_do_cliente(
+    decorrido: float, args: Configuracao | argparse.Namespace, rng: random.Random,
+) -> float:
+    """Retorna segundos; manutenção inclui o início e exclui o fim.
 
+    Fora da manutenção, o perfil fixo não consome sorteios. Na manutenção,
+    o jitter também se aplica ao perfil fixo, conforme o comportamento original.
+    """
     inicio_manutencao = args.manutencao_inicio
-
-    fim_manutencao = (args.manutencao_inicio + args.manutencao_duracao)
-
-    em_manutencao = (args.manutencao_duracao > 0 and inicio_manutencao <= decorrido < fim_manutencao)
-
-
+    fim_manutencao = args.manutencao_inicio + args.manutencao_duracao
+    em_manutencao = (
+        args.manutencao_duracao > 0
+        and inicio_manutencao <= decorrido < fim_manutencao
+    )
     if em_manutencao:
-        intervalo_base = (args.intervalo_manutencao)
-    elif args.perfil_cliente == "fixo":
+        intervalo_base = args.intervalo_manutencao
+    elif args.perfil_cliente == 'fixo':
         return args.intervalo
     else:
         intervalo_base = args.intervalo
+    fator = rng.uniform(1 - args.jitter, 1 + args.jitter)
+    intervalo_s = intervalo_base * fator
+    return max(INTERVALO_MINIMO_CLIENTE_S, intervalo_s)
 
 
-    fator = rng.uniform( 1 - args.jitter, 1 + args.jitter)
+@dataclass
+class Janela:
+    requisicoes: int = 0
+    bytes_rx: int = 0
+    bytes_tx: int = 0
+    latencias_ms: list[float] = field(default_factory=list)
+    falhas: int = 0
+    timeouts: int = 0
+    tentativas: int = 0
 
-    intervalo_final = (intervalo_base * fator)
 
-    return max(0.1,intervalo_final)
+def aggregate(folder: str | Path) -> int:
+    """Regrava somente os dois CSVs derivados e retorna a quantidade de janelas.
 
-def aggregate(folder):
-    folder = Path(folder)
-    meta = json.loads((folder/'ensaio.json').read_text(encoding='utf-8'))
-    attack = list(csv.DictReader(open(folder/'ataques.csv', encoding='utf-8')))
-    start, end = meta['inicio'], meta['fim']
-    bins = {}
-    for i in range(math.ceil(end-start)):
-        bins[i] = dict(n=0, rx=0, tx=0, lat=[], failures=0, timeouts=0, attempts=0)
-    with open(folder/'servidor.csv', encoding='utf-8') as f:
-        for row in csv.DictReader(f):
-            i = int(float(row['ts'])-start)
-            if i in bins:
-                b = bins[i]; b['n'] += 1; b['rx'] += int(row['bytes_rx']); b['tx'] += int(row['bytes_tx'])
-    with open(folder/'cliente.csv', encoding='utf-8') as f:
-        for row in csv.DictReader(f):
-            i = int(float(row['ts'])-start)
-            if i in bins:
-                b = bins[i]; b['attempts'] += 1
-                b['lat'].append(float(row['latencia_ms']))
-                b['timeouts'] += int(row['timeout'])
-                b['failures'] += 1-int(row['sucesso'])
-    paths = ['features.csv', 'avaliacao.csv']
+    Requer os logs de um ensaio e inicio/fim no JSON, em segundos Unix epoch.
+    Falhas de leitura, conversão ou escrita são propagadas ao chamador.
+    """
+    pasta_ensaio = Path(folder)
+    metadados = json.loads((pasta_ensaio / 'ensaio.json').read_text(encoding='utf-8'))
+    with open(pasta_ensaio / 'ataques.csv', encoding='utf-8') as arquivo_ataques:
+        periodos_carga = list(csv.DictReader(arquivo_ataques))
+    inicio_ensaio, fim_ensaio = metadados['inicio'], metadados['fim']
+    janelas = {
+        indice: Janela() for indice in range(math.ceil(fim_ensaio - inicio_ensaio))
+    }
+    with open(pasta_ensaio / 'servidor.csv', encoding='utf-8') as arquivo_servidor:
+        for registro in csv.DictReader(arquivo_servidor):
+            indice = int(float(registro['ts']) - inicio_ensaio)
+            if indice in janelas:
+                janela = janelas[indice]
+                janela.requisicoes += 1
+                janela.bytes_rx += int(registro['bytes_rx'])
+                janela.bytes_tx += int(registro['bytes_tx'])
+    with open(pasta_ensaio / 'cliente.csv', encoding='utf-8') as arquivo_cliente:
+        for registro in csv.DictReader(arquivo_cliente):
+            indice = int(float(registro['ts']) - inicio_ensaio)
+            if indice in janelas:
+                janela = janelas[indice]
+                janela.tentativas += 1
+                janela.latencias_ms.append(float(registro['latencia_ms']))
+                janela.timeouts += int(registro['timeout'])
+                janela.falhas += 1 - int(registro['sucesso'])
     # Reagregação explícita substitui somente arquivos derivados.
-    with open(folder/paths[0], 'w', newline='', encoding='utf-8') as f, open(folder/paths[1], 'w', newline='', encoding='utf-8') as g:
-        fields = ['janela', 'ts_inicio', 'duracao_s']+FEATURES+['consultas_cliente', 'latencia_disponivel']
-        w = csv.DictWriter(f, fieldnames=fields); w.writeheader()
-        v = csv.DictWriter(g, fieldnames=['janela','label','fase']); v.writeheader()
-        for i,b in bins.items():
-            lo = start+i; hi = min(lo+1,end); dt=hi-lo
-            attacked = any(float(a['inicio']) < hi and float(a['fim']) > lo for a in attack)
-            row = dict(janela=i, ts_inicio=lo, duracao_s=dt, taxa_requisicoes=b['n']/dt, bytes_rx=b['rx'], bytes_tx=b['tx'], latencia_ms=sum(b['lat'])/len(b['lat']) if b['lat'] else '', taxa_timeout=b['timeouts']/b['attempts'] if b['attempts'] else '', taxa_erro=b['failures']/b['attempts'] if b['attempts'] else '', consultas_cliente=b['attempts'], latencia_disponivel=int(bool(b['lat'])))
-            w.writerow(row)
-            phase = 'carga' if attacked else ('normal' if lo < float(attack[0]['inicio']) else 'recuperacao')
-            v.writerow(dict(janela=i,label=int(attacked),fase=phase))
-    return len(bins)
+    with (
+        open(pasta_ensaio / 'features.csv', 'w', newline='', encoding='utf-8') as arquivo_features,
+        open(pasta_ensaio / 'avaliacao.csv', 'w', newline='', encoding='utf-8') as arquivo_avaliacao,
+    ):
+        campos = ['janela', 'ts_inicio', 'duracao_s'] + FEATURES + [
+            'consultas_cliente', 'latencia_disponivel',
+        ]
+        escritor_features = csv.DictWriter(arquivo_features, fieldnames=campos)
+        escritor_features.writeheader()
+        escritor_avaliacao = csv.DictWriter(
+            arquivo_avaliacao, fieldnames=['janela', 'label', 'fase'],
+        )
+        escritor_avaliacao.writeheader()
+        for indice, janela in janelas.items():
+            inicio_janela = inicio_ensaio + indice
+            fim_janela = min(inicio_janela + 1, fim_ensaio)
+            duracao_janela_s = fim_janela - inicio_janela
+            sobrepoe_carga = any(
+                float(periodo['inicio']) < fim_janela
+                and float(periodo['fim']) > inicio_janela
+                for periodo in periodos_carga
+            )
+            registro = dict(
+                janela=indice,
+                ts_inicio=inicio_janela,
+                duracao_s=duracao_janela_s,
+                taxa_requisicoes=janela.requisicoes / duracao_janela_s,
+                bytes_rx=janela.bytes_rx,
+                bytes_tx=janela.bytes_tx,
+                latencia_ms=(
+                    sum(janela.latencias_ms) / len(janela.latencias_ms)
+                    if janela.latencias_ms else ''
+                ),
+                taxa_timeout=janela.timeouts / janela.tentativas if janela.tentativas else '',
+                taxa_erro=janela.falhas / janela.tentativas if janela.tentativas else '',
+                consultas_cliente=janela.tentativas,
+                latencia_disponivel=int(bool(janela.latencias_ms)),
+            )
+            escritor_features.writerow(registro)
+            fase = 'carga' if sobrepoe_carga else (
+                'normal' if inicio_janela < float(periodos_carga[0]['inicio']) else 'recuperacao'
+            )
+            escritor_avaliacao.writerow(dict(janela=indice, label=int(sobrepoe_carga), fase=fase))
+    return len(janelas)
 
-async def run(args):
-    folder = Path(args.saida)
-    folder.mkdir(parents=True, exist_ok=False)
-    logs=[]; tasks=[]; server=None
+
+async def run(args: Configuracao | argparse.Namespace) -> None:
+    pasta_ensaio = Path(args.saida)
+    pasta_ensaio.mkdir(parents=True, exist_ok=False)
+    registros_abertos = []
+    tarefas = []
+    servidor = None
     try:
-        def log(name, fields):
-            obj=Log(folder/name,fields); logs.append(obj); return obj
-        serverlog=log('servidor.csv',['ts','bytes_rx','bytes_tx'])
-        clientlog=log('cliente.csv',EVENTS)
-        loadlog=log('carga.csv',EVENTS)
-        attacks=log('ataques.csv',['inicio','fim','tipo','taxa_alvo_rps'])
-        atividades_log = log("atividades_legitimas.csv",["inicio","fim","tipo"])
-        rtu=RTU(serverlog,args.seed)
-        # Bind exclusivo: nunca usa um servidor desconhecido na porta ocupada.
-        server=await asyncio.start_server(rtu.handle,'127.0.0.1',args.port)
-        port=server.sockets[0].getsockname()[1]
-        tasks.append(asyncio.create_task(rtu.sensors()))
-        start=time.time()
-        total=args.normal+args.carga+args.recuperacao
-        if args.manutencao_duracao > 0:
-            atividades_log.row(inicio=(start + args.manutencao_inicio),fim=(start + args.manutencao_inicio + args.manutencao_duracao),tipo="manutencao_legitima")
-        rng_cliente = random.Random(args.seed + 10_000)
+        def abrir_log(nome: str, campos: Sequence[str]) -> Log:
+            registro = Log(pasta_ensaio / nome, campos)
+            registros_abertos.append(registro)
+            return registro
 
-        def proximo_intervalo(decorrido):
-            return intervalo_do_cliente(decorrido,args,rng_cliente)
-        
-        tasks.append(asyncio.create_task(polling(port,total,args.intervalo,clientlog,"legitimo",proximo_intervalo)))
+        log_servidor = abrir_log('servidor.csv', ['ts', 'bytes_rx', 'bytes_tx'])
+        log_cliente = abrir_log('cliente.csv', EVENTS)
+        log_carga = abrir_log('carga.csv', EVENTS)
+        log_ataques = abrir_log('ataques.csv', ['inicio', 'fim', 'tipo', 'taxa_alvo_rps'])
+        atividades_log = abrir_log('atividades_legitimas.csv', ['inicio', 'fim', 'tipo'])
+        rtu = RTU(log_servidor, args.seed)
+        # Bind exclusivo: nunca usa um servidor desconhecido na porta ocupada.
+        servidor = await asyncio.start_server(rtu.handle, ENDERECO_LOCAL, args.port)
+        port = servidor.sockets[0].getsockname()[1]
+        tarefas.append(asyncio.create_task(rtu.sensors()))
+        inicio_ensaio = time.time()
+        duracao_total_s = args.normal + args.carga + args.recuperacao
+        if args.manutencao_duracao > 0:
+            atividades_log.row(
+                inicio=inicio_ensaio + args.manutencao_inicio,
+                fim=inicio_ensaio + args.manutencao_inicio + args.manutencao_duracao,
+                tipo='manutencao_legitima',
+            )
+        rng_cliente = random.Random(args.seed + DESLOCAMENTO_SEED_CLIENTE)
+
+        def proximo_intervalo(decorrido: float) -> float:
+            return intervalo_do_cliente(decorrido, args, rng_cliente)
+
+        tarefa_cliente = asyncio.create_task(polling(
+            port, duracao_total_s, args.intervalo, log_cliente, 'legitimo', proximo_intervalo,
+        ))
+        tarefas.append(tarefa_cliente)
         print('Fase NORMAL', flush=True)
         await asyncio.sleep(args.normal)
-        print("Fase CARGA controlada",flush=True)
+        print("Fase CARGA controlada", flush=True)
         if args.perfil_carga == "degraus":
-            segmentos = [("baixa", args.taxa_baixa),("media", args.taxa_media),("alta", args.taxa)]
+            segmentos = [
+                ('baixa', args.taxa_baixa), ('media', args.taxa_media), ('alta', args.taxa),
+            ]
         else:
             segmentos = [("fixa", args.taxa)]
 
-        duracao_segmento = (args.carga / len(segmentos))
+        duracao_segmento = args.carga / len(segmentos)
         for nivel, taxa in segmentos:
             inicio_segmento = time.time()
 
-            print(f" Carga {nivel}: {taxa} req/s",flush=True)
+            print(f" Carga {nivel}: {taxa} req/s", flush=True)
 
-            await load(port,duracao_segmento,taxa,loadlog)
+            await load(port, duracao_segmento, taxa, log_carga)
             fim_segmento = time.time()
-            attacks.row(inicio=inicio_segmento,fim=fim_segmento,tipo=f"carga_{nivel}",taxa_alvo_rps=taxa)
+            log_ataques.row(
+                inicio=inicio_segmento, fim=fim_segmento,
+                tipo=f'carga_{nivel}', taxa_alvo_rps=taxa,
+            )
 
         print('Fase RECUPERACAO', flush=True)
         await asyncio.sleep(args.recuperacao)
-        await tasks[1]
-        end=start+total
-        metadata=dict(inicio=start,fim=end,config=vars(args),porta_efetiva=port,bytes='ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet',ambiente='loopback; servidor, cliente e carga no mesmo processo asyncio',status='completo')
-        (folder/'ensaio.json').write_text(json.dumps(metadata,indent=2,ensure_ascii=False),encoding='utf-8')
+        await tarefa_cliente
+        fim_ensaio = inicio_ensaio + duracao_total_s
+        metadados = dict(
+            inicio=inicio_ensaio, fim=fim_ensaio, config=vars(args), porta_efetiva=port,
+            bytes='ADU Modbus TCP; sem cabecalhos TCP/IP/Ethernet',
+            ambiente='loopback; servidor, cliente e carga no mesmo processo asyncio',
+            status='completo',
+        )
+        (pasta_ensaio / 'ensaio.json').write_text(
+            json.dumps(metadados, indent=2, ensure_ascii=False), encoding='utf-8',
+        )
     finally:
-        if server:
-            server.close(); await server.wait_closed()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks,return_exceptions=True)
-        if server:
+        if servidor:
+            servidor.close()
+            await servidor.wait_closed()
+        for tarefa in tarefas:
+            tarefa.cancel()
+        await asyncio.gather(*tarefas, return_exceptions=True)
+        if servidor:
             for writer in list(rtu.connections):
                 writer.close()
-        for obj in logs:
-            obj.close()
-    n=aggregate(folder)
-    print(f'Concluido: {folder} ({n} janelas).',flush=True)
+        for registro in registros_abertos:
+            registro.close()
+    quantidade_janelas = aggregate(pasta_ensaio)
+    print(f'Concluido: {pasta_ensaio} ({quantidade_janelas} janelas).', flush=True)
 
-def positive(value):
-    n=float(value)
-    if not math.isfinite(n) or n <= 0:
+def positive(value: str) -> float:
+    numero = float(value)
+    if not math.isfinite(numero) or numero <= 0:
         raise argparse.ArgumentTypeError('use numero positivo e finito')
-    return n
+    return numero
 
-def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--saida',default='resultados/ensaio_'+time.strftime('%Y%m%d_%H%M%S'))
-    p.add_argument('--normal',type=positive,default=60)
-    p.add_argument('--carga',type=positive,default=20)
-    p.add_argument('--recuperacao',type=positive,default=60)
-    p.add_argument('--taxa',type=positive,default=50)
-    p.add_argument("--perfil-carga",choices=["fixa","degraus"],default="fixa")
-    p.add_argument("--taxa-baixa",type=positive,default=2)
-    p.add_argument("--taxa-media",type=positive,default=5)
-    p.add_argument('--intervalo',type=positive,default=1)
-    p.add_argument("--perfil-cliente",choices=["fixo","variavel"],default="fixo")
-    p.add_argument("--jitter",type=float,default=0.30)
-    p.add_argument("--manutencao-inicio",type=float,default=0)
-    p.add_argument("--manutencao-duracao",type=float,default=0)
-    p.add_argument("--intervalo-manutencao",type=positive,default=0.20)
-    p.add_argument('--port',type=int,default=5020)
-    p.add_argument('--seed',type=int,default=42)
-    p.add_argument('--agregar',metavar='PASTA',help='recalcula CSVs de um ensaio completo')
-    a=p.parse_args()
-    if a.agregar:
-        print(aggregate(a.agregar)); return
-    if (a.taxa > 200 or a.carga > 120 or a.normal > 600 or a.recuperacao > 600 or a.intervalo < 0.1 or not 0 <= a.port <= 65535 or not math.isfinite(a.jitter) or not 0 <= a.jitter <= 0.5 or not math.isfinite(a.manutencao_inicio) or not math.isfinite(a.manutencao_duracao) or a.manutencao_inicio < 0 or a.manutencao_duracao < 0 or (a.manutencao_inicio + a.manutencao_duracao > a.normal) or a.intervalo_manutencao < 0.1 or (a.perfil_carga == "degraus" and not (a.taxa_baixa <= a.taxa_media <= a.taxa))):
-        p.error("limites: taxa <=200, carga <=120s, normal/recuperacao <=600s, intervalo >=0.1s, jitter 0..0.5, porta 0..65535")
+def main() -> None:
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--saida',default='resultados/ensaio_'+time.strftime('%Y%m%d_%H%M%S'))
+    parser.add_argument('--normal',type=positive,default=60)
+    parser.add_argument('--carga',type=positive,default=20)
+    parser.add_argument('--recuperacao',type=positive,default=60)
+    parser.add_argument('--taxa',type=positive,default=50)
+    parser.add_argument("--perfil-carga",choices=["fixa","degraus"],default="fixa")
+    parser.add_argument("--taxa-baixa",type=positive,default=2)
+    parser.add_argument("--taxa-media",type=positive,default=5)
+    parser.add_argument('--intervalo',type=positive,default=1)
+    parser.add_argument("--perfil-cliente",choices=["fixo","variavel"],default="fixo")
+    parser.add_argument("--jitter",type=float,default=0.30)
+    parser.add_argument("--manutencao-inicio",type=float,default=0)
+    parser.add_argument("--manutencao-duracao",type=float,default=0)
+    parser.add_argument("--intervalo-manutencao",type=positive,default=0.20)
+    parser.add_argument('--port',type=int,default=5020)
+    parser.add_argument('--seed',type=int,default=42)
+    parser.add_argument('--agregar',metavar='PASTA',help='recalcula CSVs de um ensaio completo')
+    configuracao = Configuracao(**vars(parser.parse_args()))
+    if configuracao.agregar:
+        print(aggregate(configuracao.agregar))
+        return
+    if (
+        configuracao.taxa > TAXA_MAXIMA_CARGA_RPS
+        or configuracao.carga > DURACAO_MAXIMA_CARGA_S
+        or configuracao.normal > DURACAO_MAXIMA_FASE_SEM_CARGA_S
+        or configuracao.recuperacao > DURACAO_MAXIMA_FASE_SEM_CARGA_S
+        or configuracao.intervalo < INTERVALO_MINIMO_CLIENTE_S
+        or not 0 <= configuracao.port <= PORTA_MAXIMA
+        or not math.isfinite(configuracao.jitter)
+        or not 0 <= configuracao.jitter <= JITTER_MAXIMO
+        or not math.isfinite(configuracao.manutencao_inicio)
+        or not math.isfinite(configuracao.manutencao_duracao)
+        or configuracao.manutencao_inicio < 0
+        or configuracao.manutencao_duracao < 0
+        or configuracao.manutencao_inicio + configuracao.manutencao_duracao > configuracao.normal
+        or configuracao.intervalo_manutencao < INTERVALO_MINIMO_CLIENTE_S
+        or (
+            configuracao.perfil_carga == 'degraus'
+            and not configuracao.taxa_baixa <= configuracao.taxa_media <= configuracao.taxa
+        )
+    ):
+        parser.error("limites: taxa <=200, carga <=120s, normal/recuperacao <=600s, intervalo >=0.1s, jitter 0..0.5, porta 0..65535")
     try:
-        asyncio.run(run(a))
+        asyncio.run(run(configuracao))
     except KeyboardInterrupt:
         print('Interrompido: pasta parcial; nao usar como ensaio completo.')
     except (OSError, ValueError) as exc:
-        p.exit(1, f'Falha: {exc}\nUse outra pasta de saida/porta.\n')
+        parser.exit(1, f'Falha: {exc}\nUse outra pasta de saida/porta.\n')
 
 if __name__=='__main__':
     main()

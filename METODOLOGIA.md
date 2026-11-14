@@ -1,4 +1,4 @@
-# Método experimental — contribuição do Yan
+# Método experimental
 
 ## Implementação realizada
 
@@ -6,7 +6,19 @@ Foi construído um laboratório local em Python 3.11+, com três papéis lógico
 
 O laboratório utiliza mensagens binárias Modbus TCP de leitura de holding registers (FC03, endereço inicial 0, quantidade 2 e unit id 1). O servidor também aceita outras faixas válidas dentro dos seus 100 registradores e devolve respostas de exceção para funções/endereço não suportados. Trata-se de implementação didática do subconjunto de leitura, feita com a biblioteca padrão; os arquivos originais baseados em pymodbus foram preservados separadamente.
 
-O cliente legítimo consulta os sensores em intervalos programados de um segundo. Quando a consulta atrasa, não compensa com uma rajada. As exceções de conexão, respostas inválidas e timeouts são registradas, permitindo que as consultas seguintes continuem. O timeout de cada tentativa é de 0,5 segundo. Cada consulta estabelece uma conexão TCP nova, em contraste com a conexão persistente do cliente original.
+No perfil padrão, o cliente legítimo consulta os sensores em intervalos programados de um segundo. Quando a consulta atrasa, não compensa com uma rajada. As exceções de conexão, respostas inválidas e timeouts são registradas, permitindo que as consultas seguintes continuem. O bloco de comunicação tem timeout de 0,5 segundo; o fechamento ocorre fora dele. Cada consulta estabelece uma conexão TCP nova, em contraste com a conexão persistente do cliente original.
+
+No perfil variável, o intervalo base recebe um fator uniforme entre `1-jitter` e `1+jitter`, com piso de 0,1 s. A manutenção usa outro intervalo base e também recebe jitter, inclusive com perfil fixo. Sua condição é avaliada após cada tentativa e usa início inclusivo e fim exclusivo. `atividades_legitimas.csv` registra os horários planejados, não confirma o instante de uma primeira consulta de manutenção. O gerador do cliente usa `seed + 10_000`, separado do gerador dos sensores; repetir a seed não fixa os tempos de execução.
+
+A carga pode ser fixa ou dividida em três segmentos de mesma duração planejada, com taxas baixa, média e alta. Os limites de 200 consultas/s e 120 s se aplicam à taxa máxima e à duração total da carga. `ataques.csv` registra os horários medidos de cada segmento, após seu término.
+
+## Organização e responsabilidades
+
+`RTU` mantém os sensores e atende TCP local; `request` realiza uma leitura; `polling` agenda tentativas legítimas ou de carga; `run` coordena fases e encerramento; `aggregate` transforma logs em janelas. `main` interpreta e valida a CLI. A comunicação dos clientes com o servidor continua passando por sockets, apesar de todos compartilharem o mesmo processo e event loop.
+
+Essa escolha reduz preparação do ambiente e permite encerrar os papéis em uma execução. Também compartilha CPU, disco e escalonamento: lentidão no processo pode afetar simultaneamente quem gera, atende e mede. Os resultados não isolam gargalos de uma rede industrial. `laboratorio.py` permanece único porque essas responsabilidades ainda cabem em uma leitura sequencial. `Configuracao` explicita os parâmetros e `Janela` reúne os acumuladores.
+
+O contrato completo dos CSVs e do JSON está no README. A validação dos parâmetros ocorre em main, antes do início do ensaio.
 
 ## Protocolo de execução
 
@@ -17,31 +29,26 @@ O cliente legítimo consulta os sensores em intervalos programados de um segundo
 5. Interromper a carga e manter a coleta durante a recuperação.
 6. Finalizar os registros e agregar em janelas temporais de um segundo.
 
-A configuração padrão prevê 60 s normais, 20 s de carga com teto de 50 consultas/s e 60 s de recuperação. Recomenda-se repetir a mesma configuração em pelo menos três execuções independentes e registrar taxas efetivamente atingidas. A quantidade de repetições e a duração final devem constar do artigo conforme os ensaios realmente realizados.
+A configuração padrão prevê 60 s normais, 20 s de carga com teto de 50 consultas/s e 60 s de recuperação. Recomenda-se repetir a mesma configuração em pelo menos três execuções independentes e registrar taxas efetivamente atingidas. O lote final contém 12 ensaios de 180 s, com 60 s por fase, seeds 101–112, jitter de 30%, manutenção entre 20 e 35 s e carga em segmentos de 20 s a 2, 5 e 10 consultas/s. O intervalo legítimo passa de 1 s para 0,2 s durante a manutenção.
 
 ## Aquisição e características
 
-O servidor registra o horário de recepção de cada solicitação completa para a qual conseguiu emitir resposta e os bytes Modbus de aplicação em ambas as direções. O cliente legítimo registra a latência fim a fim, sucesso, timeout e valores de processo. O gerador registra suas próprias tentativas em arquivo separado.
+O servidor captura o horário após ler o cabeçalho Modbus e grava o registro após enviar a resposta. Registra bytes Modbus de aplicação em ambas as direções. O cliente legítimo registra a latência fim a fim, sucesso, timeout e valores de processo. O gerador registra suas próprias tentativas em arquivo separado.
 
 Em cada janela calcula-se: requisições atendidas por segundo; bytes de aplicação recebidos; bytes de aplicação enviados; média das latências do cliente legítimo; proporção de timeouts; e proporção total de falhas, incluindo timeouts. A atribuição das consultas às janelas usa o instante de início da tentativa no cliente e o instante de recepção no servidor. Os dois instantes podem pertencer a janelas diferentes nas fronteiras.
 
-Os bytes não representam captura de pacotes nem utilização total de rede. Como todas as leituras têm tamanho fixo, taxa e volumes de bytes são correlacionados; discutir essa redundância na análise. Os valores dos sensores são contexto e não são alterados pela carga.
+Os bytes não representam captura de pacotes nem utilização total de rede. Como todas as leituras têm tamanho fixo, taxa e volumes de bytes são correlacionados, o que motiva a seleção de entradas descrita em ALGORITMOS_IA.MD. Os valores dos sensores são contexto e não são alterados pela carga.
 
 ## Avaliação sem vazamento de rótulos
 
-A tabela `features.csv` não contém o campo de ataque. `avaliacao.csv` contém o identificador da janela, fase e rótulo obtido da sobreposição com o intervalo de carga. A padronização e a clusterização recebem apenas as seis características documentadas. Os rótulos são associados posteriormente para cálculo das métricas. Os dados sintéticos e os exemplos curtos de validação não substituem os ensaios finais do grupo.
+A tabela `features.csv` não contém rótulos, fase, seed ou horários da carga. `avaliacao.csv` contém o identificador da janela, fase e rótulo obtido da sobreposição com o intervalo de carga. O laboratório exporta as seis características documentadas na ordem contratada. Os notebooks selecionam posteriormente taxa, latência e indicador de disponibilidade; mediana e escalas do cenário variável são ajustadas somente no treino. Os rótulos não entram nessas entradas numéricas, mas são usados na validação para mapear clusters para classes e depois calcular métricas no teste. Essa atribuição de classes usa supervisão, embora o ajuste dos clusters não use rótulos. Os exemplos curtos de validação não substituem os ensaios finais do grupo.
 
-Uma detecção de aumento de taxa pode ocorrer sem falhas de disponibilidade. O trabalho deve distinguir detecção da fase de carga de detecção de um DoS que efetivamente degradou o serviço. Não presumir que clusters minoritários representam ataques em qualquer duração de ensaio.
+Uma detecção de aumento de taxa pode ocorrer sem falhas de disponibilidade. O rótulo identifica a presença da carga experimental e não comprova DoS. Clusters minoritários não correspondem necessariamente a esse rótulo.
 
-## Ajustes necessários no artigo recebido
+## Limitações do experimento
 
-- Substituir a afirmação de que todo o caminho experimental utiliza pymodbus pela descrição desta implementação didática, OU manter essa versão como experimento alternativo e documentá-la explicitamente.
-- Informar que os três papéis executam localmente no mesmo processo asyncio, sem VMs nesta entrega.
-- Definir bytes como bytes ADU Modbus, sem cabeçalhos de rede.
-- Esclarecer o uso de uma conexão nova por consulta e não comparar diretamente a latência com os 0,893 ms da linha de base original.
-- Relatar somente as durações, contagens e efeitos realmente medidos; não declarar sucesso de DoS sem degradação observada.
-- Painel, K-Means e DENCLUE continuam sendo a etapa do Bryan; não estão implementados neste pacote.
-
-## O que explicar na apresentação
-
-O servidor simula sensores; o cliente faz leituras normais; a carga adiciona leituras controladas. A coleta no servidor permite observar o tráfego adicional. Os logs são agrupados por segundo para transformar eventos em uma tabela numérica. Os horários da carga ficam separados para conferir as detecções depois, sem entregar a resposta ao algoritmo.
+- `run` grava `status: completo` antes de agregar; uma interrupção pode deixar a pasta sem JSON e uma falha posterior pode deixar derivados incompletos. O status isolado não certifica conclusão.
+- `aggregate` usa `int(ts - inicio)` para localizar eventos. Um evento ligeiramente anterior ao início pode cair na primeira janela; na última janela parcial, um evento posterior ao fim pode ser incluído. A função não valida logs arbitrários fora do intervalo.
+- O fim analisado é planejado, enquanto as fases usam esperas e tentativas reais. Uma consulta iniciada perto do prazo pode terminar depois dele.
+- O lote ignora pastas existentes sem conferir o status. O painel conta registros entre atualizações, que não equivalem necessariamente a um segundo exato.
+- Nos notebooks 10/12, o treino não exclui pontos sem convergência. A previsão do notebook 10 os classifica como ruído.
