@@ -140,7 +140,7 @@ Teste no **cenário variável**: 12 ensaios, 2.160 janelas, com treino, validaç
 
 ---
 
-## 🗂️ Estrutura do repositório
+## 📁 Estrutura do repositório
 
 ```text
 ClusterGuard-SCADA/
@@ -302,7 +302,7 @@ A reagregação substitui somente `features.csv` e `avaliacao.csv` e não modifi
 
 ---
 
-## ⚠️ Limites da conclusão
+## 🚧 Limites da conclusão
 
 - **Mede carga, não derrubada.** O experimento mede anomalias de tráfego sob carga de aplicação controlada. Não provoca falhas nem adiciona latência artificial. Aumento de taxa **não** prova indisponibilidade: só descreva como DoS efetivo se os registros mostrarem degradação. Se todos os clientes continuarem respondendo, relate aumento de carga, sem alegar negação de serviço.
 - **Modbus parcial.** O servidor aceita só o subconjunto necessário (leitura FC03, 100 registradores). Não é uma RTU industrial completa.
