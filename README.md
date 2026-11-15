@@ -1,49 +1,174 @@
-# ClusterGuard SCADA
+<div align="center">
 
-Laboratório local de tráfego Modbus TCP e análise de anomalias com K-Means e DENCLUE.
+# 🛡️ ClusterGuard SCADA
 
-## Começar no Windows
+**Laboratório local de tráfego Modbus TCP para detecção de anomalias com K-Means e DENCLUE**
 
-O laboratório requer **Python 3.11 ou superior** e usa somente a biblioteca padrão. Os notebooks de análise utilizam NumPy, pandas, matplotlib, scikit-learn e Jupyter. Os arquivos históricos em `originais/` utilizam pymodbus. Essas dependências não são necessárias para coletar ou reagregar ensaios com `laboratorio.py`.
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![Dependências](https://img.shields.io/badge/laborat%C3%B3rio-s%C3%B3%20biblioteca%20padr%C3%A3o-2ea44f)
+![Plataforma](https://img.shields.io/badge/testado%20no-Windows-0078D6?logo=windows&logoColor=white)
+![Testes](https://img.shields.io/badge/testes-16%20OK-2ea44f)
+![Escopo](https://img.shields.io/badge/escopo-did%C3%A1tico%20%2F%20loopback-orange)
 
-1. Abra a pasta do repositório.
-2. Abra o PowerShell na pasta que contém `laboratorio.py`.
-3. Confira a versão e execute:
+[Início rápido](#-início-rápido) •
+[Como funciona](#-como-funciona) •
+[Resultados](#-resultados-em-resumo) •
+[Estrutura](#-estrutura-do-repositório) •
+[Dados](#-dados-produzidos) •
+[Limites](#-limites-da-conclusão)
+
+</div>
+
+---
+
+## 📌 Sobre o projeto
+
+O **ClusterGuard SCADA** simula, em uma única máquina, uma RTU Modbus TCP, uma estação supervisória legítima e um gerador de carga. Cada execução produz logs brutos e janelas de um segundo **sem rótulos**, com a verdade de referência guardada em arquivo separado. Os notebooks usam esses dados para testar se **K-Means** e uma versão didática de **DENCLUE** identificam janelas de carga anormal.
+
+| | |
+|---|---|
+| 🧪 **Coleta** | Servidor Modbus TCP didático, cliente legítimo e carga controlada, tudo com a biblioteca padrão do Python |
+| 📊 **Dados** | Logs brutos, características por janela de 1 s e rótulos temporais separados |
+| 🤖 **Análise** | Notebooks com K-Means e DENCLUE, treino/validação/teste separados por ensaio |
+| ✅ **Verificação** | 16 testes automatizados, reagregação reprodutível byte a byte |
+
+> [!IMPORTANT]
+> O escopo é **didático**: sensores sintéticos, tráfego em loopback e um único processo. O projeto não opera uma planta SCADA e não foi validado com equipamento físico. Veja [Limites da conclusão](#-limites-da-conclusão).
+
+---
+
+## 🚀 Início rápido
+
+**Requisitos:** Python **3.11 ou superior**. A coleta usa apenas a biblioteca padrão.
 
 ```powershell
 python --version
 python laboratorio.py
 ```
 
-O programa inicia seu próprio servidor em `127.0.0.1:5020`, cliente legítimo e módulo de carga. Não execute os servidores originais ao mesmo tempo nessa porta. Para usar uma porta local disponível automaticamente:
+Pronto. O programa sobe o próprio servidor em `127.0.0.1:5020`, o cliente legítimo e o módulo de carga, e grava tudo em uma pasta de resultados mostrada no terminal.
+
+<details>
+<summary><b>O que a execução padrão faz</b></summary>
+
+<br>
+
+A execução padrão dura cerca de **140 segundos**:
+
+| Fase | Duração | O que acontece |
+|---|---:|---|
+| 🟢 Normal | 60 s | Só o cliente legítimo, cerca de 1 consulta/s |
+| 🔴 Carga | 20 s | Consultas extras a no máximo 50/s |
+| 🟡 Recuperação | 60 s | A carga para e a coleta continua |
+
+- O programa **recusa sobrescrever** uma pasta de saída existente.
+- Para escolher automaticamente uma porta local livre, use `python laboratorio.py --port 0`.
+- Não rode os servidores de `originais/` ao mesmo tempo na porta 5020.
+
+</details>
+
+<details>
+<summary><b>Para rodar os notebooks de análise</b></summary>
+
+<br>
+
+Os notebooks precisam de bibliotecas extras. O laboratório não precisa delas.
 
 ```powershell
-python laboratorio.py --port 0
+python -m venv venv
+venv\Scripts\activate
+pip install numpy pandas matplotlib scikit-learn jupyter
+jupyter notebook
 ```
 
-A execução padrão dura aproximadamente 140 segundos: 60 segundos normais, 20 segundos de carga a no máximo 50 consultas/s e 60 segundos de recuperação. O cliente legítimo mantém uma consulta/s quando as respostas permitem. O diretório de resultados aparece no terminal. Não reutilize uma pasta de saída existente; o programa recusa sobrescrever ensaios.
+Os arquivos de `originais/` usam `pymodbus` e têm instruções próprias em `originais/readme.txt`.
 
-## Estrutura do repositório
+</details>
 
-- `laboratorio.py`: servidor Modbus TCP didático, cliente com tratamento de erros, carga controlada, cronograma e agregação.
-- `test_laboratorio.py`: testes de comunicação, timeout, validação, preservação de arquivos e experimento completo.
-- `METODOLOGIA.md`: protocolo experimental, características e limites do método.
-- `exemplos_validados/`: três ensaios curtos de integração, executados em Linux; distintos do lote experimental final.
-- `VALIDACAO.md`: resultados observados e limitações.
-- `originais/`: versão inicial do cliente e do servidor, baseada em pymodbus.
-- `executar_experimentos.py`: lote com as seeds 101–112, manutenção e carga em degraus.
-- `visualizar.py`: acompanhamento no terminal; suas contagens entre atualizações não substituem as janelas de `features.csv`.
-- `notebooks/`, `datasets/` e `ALGORITMOS_IA.MD`: preparação dos dados e análise com K-Means e DENCLUE.
+---
 
-## Escopo e requisitos
+## 🧭 Como funciona
 
-O experimento permite repetir configurações e comparar taxas de carga a partir dos registros brutos. A seed controla as sequências pseudoaleatórias dos sensores e dos intervalos variáveis, mas não reproduz exatamente o escalonamento, as latências ou os CSVs de uma nova execução.
+```mermaid
+flowchart LR
+    subgraph L["laboratorio.py (um processo, loopback)"]
+        direction TB
+        RTU["🖥️ RTU virtual<br/>Modbus TCP"]
+        CLI["👷 Cliente legítimo<br/>~1 consulta/s"]
+        CAR["⚡ Gerador de carga<br/>até 200 consultas/s"]
+        CLI --> RTU
+        CAR --> RTU
+    end
+    L --> RAW["📁 Logs brutos<br/>servidor · cliente · carga"]
+    RAW --> AGG["🧮 Agregação<br/>janelas de 1 s"]
+    AGG --> F["features.csv<br/>sem rótulos"]
+    AGG --> A["avaliacao.csv<br/>rótulos e fases"]
+    F --> NB["📓 Notebooks<br/>K-Means · DENCLUE"]
+    A -. "só para avaliar" .-> NB
+```
 
-O laboratório gera logs, características sem rótulos e avaliação temporal separada. A coleta mantém comunicação local, limites de carga e recusa de sobrescrita de ensaios. O treinamento dos detectores ocorre nos notebooks. O escopo se limita a sensores sintéticos e tráfego local; não inclui operação de uma planta SCADA ou validação com equipamento físico.
+1. O servidor atende leituras de registradores (FC03) e registra cada resposta.
+2. O cliente legítimo consulta os sensores e anota sucesso, timeout e latência.
+3. Na fase de carga, o gerador soma consultas às do cliente. A taxa efetiva é **medida nos logs**, nunca presumida.
+4. A agregação transforma os logs em janelas de 1 segundo e separa as características dos rótulos.
+5. Os notebooks treinam sem ver os rótulos. Eles só servem para avaliar depois.
 
-## Repetir experimentos
+---
 
-Exemplo de três repetições de uma MESMA configuração (cerca de sete minutos):
+## 📈 Resultados em resumo
+
+Teste no **cenário variável**: 12 ensaios, 2.160 janelas, com treino, validação e teste separados **por ensaio**. O teste tem 540 janelas, 183 delas de carga.
+
+| Métrica | K-Means | DENCLUE didático |
+|---|---:|---:|
+| Acurácia | 0,7796 | 0,7722 |
+| Precisão | 0,7254 | **1,0000** |
+| Recall | **0,5628** | 0,3279 |
+| F1 | **0,6338** | 0,4938 |
+| Taxa de falsos positivos | 0,1092 | **0,0000** |
+
+| Nível de carga | Janelas | K-Means detectou | DENCLUE detectou |
+|---|---:|---:|---:|
+| Baixa (2/s) | 60 | 3 (5,00%) | 0 (0,00%) |
+| Média (5/s) | 60 | 42 (70,00%) | 0 (0,00%) |
+| Alta (10/s) | 63 | 58 (92,06%) | 60 (95,24%) |
+
+**Leitura:** o K-Means detecta mais carga, mas gera falsos alarmes. O DENCLUE didático não errou em nenhuma janela legítima, mas perdeu 123 das 183 janelas de carga, quase todas de carga baixa e média.
+
+> [!NOTE]
+> São apenas três ensaios de teste, e as janelas de um mesmo ensaio não são independentes. Não há intervalos de confiança. Detalhes e ressalvas em [`ALGORITMOS_IA.MD`](ALGORITMOS_IA.MD).
+
+---
+
+## 🗂️ Estrutura do repositório
+
+```text
+ClusterGuard-SCADA/
+├── laboratorio.py            # Servidor, clientes, carga, cronograma e agregação
+├── executar_experimentos.py  # Lote final: seeds 101–112
+├── visualizar.py             # Acompanhamento no terminal
+├── test_laboratorio.py       # 16 testes automatizados
+├── notebooks/                # Preparação dos dados e análise (04–12)
+├── datasets/                 # Consolidado experimental
+├── resultados/               # Ensaios coletados
+├── exemplos_validados/       # Três ensaios curtos de integração (Linux)
+├── originais/                # Cliente e servidor iniciais, com pymodbus
+├── METODOLOGIA.md            # Protocolo experimental e limites do método
+├── ALGORITMOS_IA.MD          # K-Means, DENCLUE e métricas
+└── VALIDACAO.md              # Resultados da verificação e limitações
+```
+
+| Documento | Leia quando quiser saber |
+|---|---|
+| [`METODOLOGIA.md`](METODOLOGIA.md) | Como o experimento foi desenhado e o que ele não mede |
+| [`ALGORITMOS_IA.MD`](ALGORITMOS_IA.MD) | Como os modelos foram ajustados e avaliados |
+| [`VALIDACAO.md`](VALIDACAO.md) | O que foi testado e o que não foi |
+
+---
+
+## 🔁 Repetir experimentos
+
+Três repetições de uma **mesma** configuração (cerca de sete minutos):
 
 ```powershell
 python laboratorio.py --normal 60 --carga 20 --recuperacao 60 --taxa 50 --seed 43 --saida resultados/repeticao_1
@@ -51,23 +176,36 @@ python laboratorio.py --normal 60 --carga 20 --recuperacao 60 --taxa 50 --seed 4
 python laboratorio.py --normal 60 --carga 20 --recuperacao 60 --taxa 50 --seed 45 --saida resultados/repeticao_3
 ```
 
-Após isso, outras taxas podem ser comparadas mantendo os demais parâmetros. O limite implementado é de 200 consultas/s e 120 segundos por fase de carga; não existe alvo remoto configurável. A taxa efetiva é medida nos logs, não presumida a partir do parâmetro. O gerador é sequencial, sem fila ilimitada e sem compensação por rajadas quando atrasa.
+Depois, compare outras taxas mantendo os demais parâmetros.
 
-Interromper com Ctrl+C deixa uma pasta parcial, que não deve entrar na análise. Uma pasta completa tem `ensaio.json` com `status: completo`, `features.csv` e `avaliacao.csv`.
+> [!TIP]
+> A seed controla as sequências pseudoaleatórias dos sensores e dos intervalos variáveis. Ela **não** reproduz o escalonamento, as latências nem os CSVs de uma nova execução.
 
-**Limitação atual:** `run` grava o JSON somente ao final da coleta, antes da agregação. Uma interrupção anterior pode deixar a pasta sem JSON; uma falha na agregação pode deixar `status: completo` sem os derivados completos. Portanto, esse status isolado não certifica a conclusão. Confira também o encerramento sem erro e os dois CSVs derivados. Não existe hoje um status explícito para ensaio incompleto.
+**Lote final.** `python executar_experimentos.py` roda as seeds 101–112 com 60 s por fase, manutenção e carga em degraus. Ele ignora qualquer pasta já existente, mesmo incompleta, e também executa se for importado. Uma pasta ignorada não comprova conclusão.
+
+**Interromper.** Ctrl+C deixa uma pasta parcial, que não deve entrar na análise. Uma pasta completa tem `ensaio.json` com `status: completo`, `features.csv` e `avaliacao.csv`.
+
+> [!WARNING]
+> **Limitação atual:** `run` grava o JSON só ao final da coleta, antes da agregação. Uma interrupção antes disso pode deixar a pasta sem JSON. Uma falha na agregação pode deixar `status: completo` sem os derivados completos. Esse status, sozinho, não certifica a conclusão: confira também o encerramento sem erro e os dois CSVs derivados. Não existe hoje um status explícito para ensaio incompleto.
 
 ### Perfis disponíveis
 
-`--perfil-cliente variavel` aplica variação uniforme de ±`--jitter` ao intervalo base. O perfil padrão é `fixo`. Durante manutenção, o intervalo base passa a `--intervalo-manutencao`, e o jitter se aplica mesmo se o perfil for fixo. O período inclui o início e exclui o fim, avaliados após cada tentativa.
+**Cliente variável.** `--perfil-cliente variavel` aplica variação uniforme de ±`--jitter` ao intervalo base. O padrão é `fixo`. Na manutenção, o intervalo base passa a `--intervalo-manutencao` e o jitter se aplica mesmo no perfil fixo. O período inclui o início e exclui o fim, avaliados após cada tentativa.
 
-`--perfil-carga degraus` divide a duração total de carga igualmente entre taxas baixa, média e alta. Exemplo curto, em uma pasta nova:
+**Carga em degraus.** `--perfil-carga degraus` divide a duração total de carga em três partes iguais, com taxas baixa, média e alta.
+
+Exemplo curto, em uma pasta nova:
 
 ```powershell
 python laboratorio.py --port 0 --normal 1 --carga 1 --recuperacao 1 --perfil-cliente variavel --manutencao-inicio 0.2 --manutencao-duracao 0.4 --perfil-carga degraus --taxa-baixa 2 --taxa-media 5 --taxa 10 --seed 43 --saida resultados/verificacao_perfis
 ```
 
-| Parâmetros | Restrição da CLI |
+<details>
+<summary><b>Tabela de parâmetros e limites da CLI</b></summary>
+
+<br>
+
+| Parâmetros | Restrição |
 |---|---|
 | `normal`, `recuperacao` | Positivos, finitos, até 600 s cada |
 | `carga` | Positiva, finita, até 120 s no total, inclusive em degraus |
@@ -76,31 +214,38 @@ python laboratorio.py --port 0 --normal 1 --carga 1 --recuperacao 1 --perfil-cli
 | `intervalo`, `intervalo-manutencao` | Finitos, no mínimo 0,1 s |
 | `jitter` | Finito, entre 0 e 0,5 |
 | `manutencao-inicio`, `manutencao-duracao` | Finitos, não negativos; início + duração ≤ fase normal |
-| `port` | Inteiro entre 0 e 65535; 0 escolhe uma porta local disponível |
+| `port` | Inteiro entre 0 e 65535; 0 escolhe uma porta local livre |
 | `seed` | Inteiro |
 
-Os limites de duração se referem à configuração; uma tentativa iniciada antes do prazo pode terminar depois dele. O timeout de comunicação é 0,5 s; o fechamento da conexão ocorre fora desse bloco de timeout.
+Os limites de duração se referem à configuração: uma tentativa iniciada antes do prazo pode terminar depois dele. O timeout de comunicação é de 0,5 s, e o fechamento da conexão ocorre fora desse bloco. O gerador é sequencial, sem fila ilimitada e sem compensação por rajadas quando atrasa. Não existe alvo remoto configurável.
 
-O lote `python executar_experimentos.py` usa 60 s por fase e seeds 101–112. Ele ignora qualquer pasta já existente, mesmo incompleta, e executa também se for importado. Execute-o diretamente apenas quando quiser esse lote; uma pasta ignorada não comprova conclusão.
+</details>
 
-## Arquivos produzidos em cada ensaio
+---
+
+## 📦 Dados produzidos
+
+Cada ensaio gera uma pasta com estes arquivos:
 
 | Arquivo | Conteúdo |
 |---|---|
-| `servidor.csv` | Uma linha por resposta concluída: horário de recepção e bytes de aplicação Modbus recebidos/enviados, incluindo cliente e carga. |
-| `cliente.csv` | Tentativas legítimas, sucesso/falha, timeout, latência, sensores e bytes. |
-| `carga.csv` | Tentativas do módulo de carga e seus resultados. |
-| `ataques.csv` | Início/fim efetivos da fase de carga e taxa alvo. |
-| `atividades_legitimas.csv` | Início/fim planejados da manutenção; fica só com o cabeçalho se ela estiver desativada. |
-| `ensaio.json` | Configuração, seed, porta efetiva, intervalo analisado e ambiente. |
-| `features.csv` | Características em janelas de um segundo, SEM rótulos de ataque. |
-| `avaliacao.csv` | Rótulos temporais e fases, separados para avaliação posterior. |
+| `servidor.csv` | Uma linha por resposta concluída: horário e bytes Modbus recebidos/enviados, de todas as origens |
+| `cliente.csv` | Tentativas legítimas: sucesso, timeout, latência, sensores e bytes |
+| `carga.csv` | Tentativas do módulo de carga e seus resultados |
+| `ataques.csv` | Início e fim efetivos da fase de carga e taxa alvo |
+| `atividades_legitimas.csv` | Início e fim planejados da manutenção (só cabeçalho se desativada) |
+| `ensaio.json` | Configuração, seed, porta efetiva, intervalo analisado e ambiente |
+| `features.csv` | Características em janelas de 1 s, **sem rótulos** |
+| `avaliacao.csv` | Rótulos temporais e fases, **separados** para avaliação |
 
-Os horários são Unix epoch em segundos. A última janela pode ser parcial se a duração escolhida não for inteira. Os bytes estão na perspectiva do servidor e excluem cabeçalhos Ethernet/IP/TCP, handshakes e retransmissões. Requisições de leitura usam 12 bytes Modbus ADU; respostas bem-sucedidas de dois registradores usam 13 bytes.
+Horários são Unix epoch em segundos. A última janela pode ser parcial. Os bytes estão na perspectiva do servidor e excluem cabeçalhos Ethernet/IP/TCP, handshakes e retransmissões: leituras usam 12 bytes de ADU Modbus e respostas de dois registradores usam 13.
 
-### Contrato de dados
+<details>
+<summary><b>Contrato de dados (colunas de cada arquivo)</b></summary>
 
-Os CSVs são UTF-8, separados por vírgula, com cabeçalho e ponto decimal. As colunas são:
+<br>
+
+Os CSVs são UTF-8, separados por vírgula, com cabeçalho e ponto decimal.
 
 | Arquivo | Colunas, na ordem gravada |
 |---|---|
@@ -111,15 +256,21 @@ Os CSVs são UTF-8, separados por vírgula, com cabeçalho e ponto decimal. As c
 | `features.csv` | `janela,ts_inicio,duracao_s,taxa_requisicoes,bytes_rx,bytes_tx,latencia_ms,taxa_timeout,taxa_erro,consultas_cliente,latencia_disponivel` |
 | `avaliacao.csv` | `janela,label,fase` |
 
-`sucesso`, `timeout`, `label` e `latencia_disponivel` usam 0/1. Nos logs de tentativas, bytes recebidos/enviados são vistos pelo cliente; em `servidor.csv` e `features.csv`, pelo servidor. `temp` e `pres` são valores sintéticos dos registradores, vazios quando não obtidos. `detalhe` registra a falha; conexão não estabelecida conta como erro, mas o campo `timeout` só recebe 1 após estabelecer a conexão.
+- `sucesso`, `timeout`, `label` e `latencia_disponivel` usam 0/1.
+- Nos logs de tentativas, bytes são vistos pelo cliente. Em `servidor.csv` e `features.csv`, pelo servidor.
+- `temp` e `pres` são valores sintéticos dos registradores, vazios quando não obtidos.
+- `detalhe` registra a falha. Conexão não estabelecida conta como erro, mas `timeout` só recebe 1 depois de estabelecida a conexão.
+- `ensaio.json` contém `inicio`, `fim`, `config`, `porta_efetiva`, `bytes`, `ambiente` e `status`. `config` guarda os argumentos com nomes convertidos para sublinhado, inclusive a seed. `fim` é o início mais a duração planejada das três fases, não uma medição. O JSON não registra a versão do Python nem a do sistema operacional.
+- `taxa_requisicoes` conta as requisições atendidas no servidor por segundo, de **todas** as origens. O registro sai após o envio da resposta, então consultas incompletas não entram.
+- As latências são fim a fim e incluem abertura e fechamento da conexão TCP, pois cada consulta abre uma conexão. Os clientes originais usavam conexão persistente: os números não são diretamente comparáveis.
 
-`ensaio.json` contém `inicio`, `fim`, `config`, `porta_efetiva`, `bytes`, `ambiente` e `status`. `config` guarda os argumentos, com nomes de opções convertidos para sublinhado; a seed permanece ali. `fim` é o início mais a duração planejada das três fases, não uma medição do instante de encerramento. O JSON não registra a versão do Python nem a versão do sistema operacional.
+</details>
 
-`taxa_requisicoes` conta as requisições atendidas no servidor por segundo, de TODAS as origens. O registro é emitido após envio da resposta; consultas incompletas não entram nessa contagem. Os logs de tentativas do cliente/carga são preservados para investigar diferenças. As medições de latência são fim a fim, incluindo abertura de conexão TCP e fechamento, pois cada consulta abre uma conexão. Os clientes originais usavam conexão persistente: os números não são diretamente comparáveis.
+---
 
-## Entradas para a análise
+## 🔬 Usando os dados na análise
 
-A análise utiliza a pasta completa de cada ensaio. As seis colunas exportadas como características são, nesta ordem:
+As seis colunas exportadas como características, nesta ordem:
 
 ```python
 colunas = [
@@ -128,25 +279,32 @@ colunas = [
 ]
 ```
 
-`taxa_timeout` e `taxa_erro` são frações entre 0 e 1 de tentativas legítimas; erro inclui timeout. `latencia_ms` é a média das tentativas legítimas iniciadas na janela, incluindo as falhas. Janela sem consulta legítima recebe campos vazios nessas três medições: filtrar explicitamente ou imputar com uma regra documentada; não interpretar como zero. `consultas_cliente` e `latencia_disponivel` ajudam nessa decisão.
+- `taxa_timeout` e `taxa_erro` são frações entre 0 e 1 das tentativas legítimas. Erro inclui timeout.
+- `latencia_ms` é a média das tentativas legítimas iniciadas na janela, incluindo as falhas.
+- Janela sem consulta legítima fica com essas três medições **vazias**. Filtre ou impute com regra documentada, e **não** interprete como zero. `consultas_cliente` e `latencia_disponivel` ajudam nessa decisão.
 
-Não usar `janela`, `ts_inicio`, `duracao_s` ou colunas de controle como características do modelo. NÃO passar `avaliacao.csv`, fase, seed ou horários dos ataques ao treinamento/padronização. Depois de prever, unir os resultados por `janela` para avaliação.
+**Nunca passe ao modelo:** `janela`, `ts_inicio`, `duracao_s`, colunas de controle, `avaliacao.csv`, fase, seed ou horários dos ataques. Depois de prever, una os resultados por `janela` para avaliar.
 
-Essa é a interface de seis entradas do laboratório. Os notebooks existentes adotam uma seleção posterior de três colunas: `taxa_requisicoes`, `latencia_ms` e `latencia_disponivel`. O indicador de disponibilidade é uma decisão específica dessa análise, descrita em `ALGORITMOS_IA.MD`; não altera o contrato de exportação. O consolidado `datasets/dataset_experimental.csv` contém rótulos e metadados, portanto não deve ser passado inteiro ao modelo. Nos notebooks 09/10, os rótulos da validação são usados para atribuir a classe ataque/legítimo aos clusters depois do ajuste.
+Os notebooks adotam uma seleção posterior de três colunas: `taxa_requisicoes`, `latencia_ms` e `latencia_disponivel`. Essa escolha é da análise e não altera o contrato de exportação (veja [`ALGORITMOS_IA.MD`](ALGORITMOS_IA.MD)). O consolidado `datasets/dataset_experimental.csv` contém rótulos e metadados e **não deve ser passado inteiro** ao modelo. Nos notebooks 09 e 10, os rótulos da validação só atribuem a classe aos clusters depois do ajuste.
 
-O rótulo é 1 quando há qualquer sobreposição da janela com o período de carga; janelas de fronteira podem conter mistura. Fazer uma análise adicional sem essas janelas é útil. A fase recuperação não garante que eventuais efeitos residuais cessaram; seu rótulo indica ausência de carga planejada, não certeza de normalidade.
+O rótulo vale 1 quando a janela tem qualquer sobreposição com a carga, então janelas de fronteira podem ser mistas. Uma análise extra sem elas é útil. A fase de recuperação indica ausência de carga planejada, não certeza de normalidade.
 
-## Testar e reagregar
+---
+
+## ✅ Testar e reagregar
 
 ```powershell
 python -m unittest -v test_laboratorio.py
 python laboratorio.py --agregar resultados/repeticao_1
 ```
 
-A reagregação substitui somente `features.csv` e `avaliacao.csv`. Não modifica os registros brutos.
+A reagregação substitui somente `features.csv` e `avaliacao.csv` e não modifica os registros brutos. Os resultados da verificação estão em [`VALIDACAO.md`](VALIDACAO.md).
 
-## Limite da conclusão
+---
 
-Este experimento mede anomalias de tráfego sob carga de aplicação controlada. Não provoca deliberadamente falhas nem adiciona latência artificial. O aumento de taxa NÃO prova indisponibilidade: só descrever como DoS efetivo se os registros demonstrarem degradação. Se todos os clientes continuarem respondendo, relatar aumento de carga, sem alegar negação de serviço.
+## ⚠️ Limites da conclusão
 
-O servidor suporta apenas o subconjunto necessário de Modbus TCP (leitura FC03, 100 registradores), não uma RTU industrial completa. Todos os papéis rodam no mesmo processo/event loop e no mesmo computador, o que limita a independência das medições e a generalização para redes industriais. Os testes validam este caminho autocontido; não comprovam compatibilidade com todas as versões do pymodbus ou com equipamentos físicos.
+- **Mede carga, não derrubada.** O experimento mede anomalias de tráfego sob carga de aplicação controlada. Não provoca falhas nem adiciona latência artificial. Aumento de taxa **não** prova indisponibilidade: só descreva como DoS efetivo se os registros mostrarem degradação. Se todos os clientes continuarem respondendo, relate aumento de carga, sem alegar negação de serviço.
+- **Modbus parcial.** O servidor aceita só o subconjunto necessário (leitura FC03, 100 registradores). Não é uma RTU industrial completa.
+- **Tudo no mesmo lugar.** Todos os papéis rodam no mesmo processo, event loop e computador. Isso limita a independência das medições e a generalização para redes industriais.
+- **Testes locais.** Os testes validam este caminho autocontido. Não comprovam compatibilidade com todas as versões do pymodbus nem com equipamentos físicos.
